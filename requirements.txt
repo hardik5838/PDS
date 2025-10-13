@@ -1,3 +1,7 @@
 streamlit
+pandas
+altair
+requests
+altair_data_server
 plotly.express
-plotly.graph_objects
+thefuzz
