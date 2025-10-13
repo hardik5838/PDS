@@ -11,17 +11,40 @@ st.set_page_config(
     layout="wide",
 )
 
-# --- Data Loading and Caching ---
+# --- OPTIMIZED Data Loading and Caching ---
 @st.cache_data
 def load_data(file_path):
     """
-    Loads and processes the maintenance data from a CSV file.
+    Loads and processes data from a large CSV file using memory-efficient techniques.
     """
     try:
-        df = pd.read_csv(file_path)
+        st.info("Iniciando la carga optimizada del archivo CSV...")
 
+        # --- Optimization 1: Specify only the columns we need ---
+        # This prevents loading the entire large file into memory.
+        columns_to_load = [
+            'Fecha Planificada', 'Fecha cierre', 'CCAA', 'Nombre Centro',
+            'Desc. Equipo', 'Tipo Trabajo', 'Desc. Estado', 'Contratista'
+        ]
+
+        # --- Optimization 2: Specify efficient data types ---
+        # Using 'category' for repetitive text columns saves a lot of memory.
+        data_types = {
+            'CCAA': 'category',
+            'Nombre Centro': 'category',
+            'Desc. Equipo': 'category',
+            'Tipo Trabajo': 'category',
+            'Desc. Estado': 'category',
+            'Contratista': 'category'
+        }
+
+        # Load the data with the optimizations
+        df = pd.read_csv(file_path, usecols=columns_to_load, dtype=data_types)
+        
+        st.info(f"✅ Archivo CSV cargado con éxito. {len(df):,} filas procesadas.")
+        
         # --- Data Cleaning and Preparation ---
-        # Standardize column names (e.g., remove spaces, special characters)
+        st.info("Limpiando y preparando los datos...")
         df.columns = df.columns.str.strip()
         df.rename(columns={
             'Nombre Centro': 'Centro',
@@ -32,42 +55,42 @@ def load_data(file_path):
             'Fecha cierre': 'Fecha_Cierre'
         }, inplace=True)
 
-        # Convert date columns to datetime objects, handling potential errors
-        df['Fecha_Planificada'] = pd.to_datetime(df['Fecha_Planificada'], dayfirst=True, errors='coerce')
-        df['Fecha_Cierre'] = pd.to_datetime(df['Fecha_Cierre'], dayfirst=True, errors='coerce')
-
-        # Drop rows where the planned date is missing, as they can't be analyzed
+        # Efficient Date Conversion
+        st.info("Convirtiendo columnas de fecha...")
+        df['Fecha_Planificada'] = pd.to_datetime(df['Fecha_Planificada'], format='%d/%m/%Y', errors='coerce')
+        df['Fecha_Cierre'] = pd.to_datetime(df['Fecha_Cierre'], format='%d/%m/%Y', errors='coerce')
+        st.info("✅ Fechas convertidas.")
+        
         df.dropna(subset=['Fecha_Planificada'], inplace=True)
 
-        # Extract Year and Month for filtering and analysis
         df['Año'] = df['Fecha_Planificada'].dt.year
         df['Mes'] = df['Fecha_Planificada'].dt.month
-
-        # --- Standardize 'Tipo_Trabajo' ---
-        # This function cleans the work type column to group similar types.
+        
+        st.info("Agrupando tipos de trabajo...")
         def clean_tipo_trabajo(tipo):
-            if 'COR' in str(tipo).upper():
-                return 'Correctivo'
-            if 'PRV' in str(tipo).upper():
-                return 'Preventivo'
-            if 'SIN' in str(tipo).upper():
-                return 'Siniestro'
-            if 'INS' in str(tipo).upper():
-                return 'Inspeccion'
+            if not isinstance(tipo, str):
+                tipo = str(tipo)
+            
+            tipo_upper = tipo.upper()
+            if 'COR' in tipo_upper: return 'Correctivo'
+            if 'PRV' in tipo_upper: return 'Preventivo'
+            if 'SIN' in tipo_upper: return 'Siniestro'
+            if 'INS' in tipo_upper: return 'Inspeccion'
             return 'Otro'
 
         df['Tipo_Trabajo_Agrupado'] = df['Tipo_Trabajo'].apply(clean_tipo_trabajo)
-
+        st.success("🎉 ¡Datos listos para el análisis!")
+        
         return df
 
     except FileNotFoundError:
-        st.error(f"Error: El archivo '{file_path}' no se encontró. Asegúrate de que esté en la misma carpeta que el script.")
+        st.error(f"Error: El archivo '{file_path}' no se encontró.")
         return pd.DataFrame()
     except Exception as e:
         st.error(f"Ocurrió un error al procesar el archivo: {e}")
         return pd.DataFrame()
 
-# Load the data
+# Load the data using the optimized function
 df = load_data('PDS - Hoja1.csv')
 
 if not df.empty:
@@ -80,34 +103,30 @@ if not df.empty:
     start_date = st.sidebar.date_input('Fecha de inicio', min_date, min_value=min_date, max_value=max_date)
     end_date = st.sidebar.date_input('Fecha de fin', max_date, min_value=min_date, max_value=max_date)
 
-    # Convert sidebar dates to datetime for filtering
     start_datetime = pd.to_datetime(start_date)
     end_datetime = pd.to_datetime(end_date)
 
-    # Apply date filter
     df_filtered = df[(df['Fecha_Planificada'] >= start_datetime) & (df['Fecha_Planificada'] <= end_datetime)].copy()
 
     # --- Geographic Filters (dynamic) ---
     st.sidebar.subheader('Filtros Geográficos')
-
-    # Filter by Autonomous Community
-    default_communities = df_filtered['CCAA'].unique().tolist()
+    default_communities = sorted(df_filtered['CCAA'].dropna().unique().tolist())
     selected_communities = st.sidebar.multiselect('Comunidad Autónoma', default_communities, default=default_communities)
 
-    # Filter data based on selected communities
-    df_filtered = df_filtered[df_filtered['CCAA'].isin(selected_communities)]
+    if selected_communities:
+        df_filtered = df_filtered[df_filtered['CCAA'].isin(selected_communities)]
 
-    # Filter by Center (updates based on community selection)
     if not df_filtered.empty:
-        default_centros = df_filtered['Centro'].unique().tolist()
+        default_centros = sorted(df_filtered['Centro'].dropna().unique().tolist())
         selected_centros = st.sidebar.multiselect('Centro', default_centros, default=default_centros)
-        df_filtered = df_filtered[df_filtered['Centro'].isin(selected_centros)]
+        if selected_centros:
+            df_filtered = df_filtered[df_filtered['Centro'].isin(selected_centros)]
 
-    # Filter by Installation (updates based on center selection)
     if not df_filtered.empty:
-        default_instalaciones = df_filtered['Instalacion'].dropna().unique().tolist()
+        default_instalaciones = sorted(df_filtered['Instalacion'].dropna().unique().tolist())
         selected_instalaciones = st.sidebar.multiselect('Instalación', default_instalaciones, default=default_instalaciones)
-        df_filtered = df_filtered[df_filtered['Instalacion'].isin(selected_instalaciones)]
+        if selected_instalaciones:
+            df_filtered = df_filtered[df_filtered['Instalacion'].isin(selected_instalaciones)]
 
     # --- Main Dashboard Area ---
     st.title("Dashboard de Órdenes de Trabajo")
@@ -201,52 +220,28 @@ if not df.empty:
 
             # --- Compliance Ratio ---
             st.subheader("Ratio de Cumplimiento (Órdenes Cerradas en el Mismo Mes)")
-            # Filter for closed WOs with valid open/close dates
             df_ratio = df_filtered.dropna(subset=['Fecha_Planificada', 'Fecha_Cierre']).copy()
             
-            # Check if opened and closed in the same month
             df_ratio['Mismo_Mes'] = df_ratio['Fecha_Planificada'].dt.month == df_ratio['Fecha_Cierre'].dt.month
-            
-            # Group by month of creation
             df_ratio['Mes_Creacion'] = df_ratio['Fecha_Planificada'].dt.to_period('M').astype(str)
             
-            # Calculate total WOs and those closed in the same month
             monthly_compliance = df_ratio.groupby('Mes_Creacion')['Mismo_Mes'].agg(['count', 'sum']).reset_index()
             monthly_compliance.rename(columns={'count': 'Total_Abiertas', 'sum': 'Cerradas_Mismo_Mes'}, inplace=True)
             
-            # Calculate the ratio
-            monthly_compliance['Ratio_Cumplimiento'] = (monthly_compliance['Cerradas_Mismo_Mes'] / monthly_compliance['Total_Abiertas']) * 100
+            if not monthly_compliance.empty and monthly_compliance['Total_Abiertas'].sum() > 0:
+                monthly_compliance['Ratio_Cumplimiento'] = (monthly_compliance['Cerradas_Mismo_Mes'] / monthly_compliance['Total_Abiertas']) * 100
             
-            if not monthly_compliance.empty:
                 st.write("Este ratio muestra el porcentaje de órdenes de trabajo que se cerraron en el mismo mes en que se planificaron.")
                 
-                # Create the chart
                 fig_ratio = go.Figure()
-                fig_ratio.add_trace(go.Bar(
-                    x=monthly_compliance['Mes_Creacion'],
-                    y=monthly_compliance['Total_Abiertas'],
-                    name='Total Abiertas en el Mes',
-                    marker_color='lightblue'
-                ))
-                fig_ratio.add_trace(go.Bar(
-                    x=monthly_compliance['Mes_Creacion'],
-                    y=monthly_compliance['Cerradas_Mismo_Mes'],
-                    name='Cerradas en el Mismo Mes',
-                    marker_color='blue'
-                ))
-                
-                fig_ratio.update_layout(
-                    title='Comparativa de Órdenes Abiertas vs. Cerradas en el Mismo Mes',
-                    xaxis_title='Mes de Creación',
-                    yaxis_title='Número de Órdenes',
-                    barmode='overlay'
-                )
+                fig_ratio.add_trace(go.Bar(x=monthly_compliance['Mes_Creacion'], y=monthly_compliance['Total_Abiertas'], name='Total Abiertas', marker_color='lightblue'))
+                fig_ratio.add_trace(go.Bar(x=monthly_compliance['Mes_Creacion'], y=monthly_compliance['Cerradas_Mismo_Mes'], name='Cerradas Mismo Mes', marker_color='blue'))
+                fig_ratio.update_layout(title='Órdenes Abiertas vs. Cerradas en el Mismo Mes', barmode='overlay')
                 st.plotly_chart(fig_ratio, use_container_width=True)
 
-                # Display the ratio data in a table for clarity
                 st.dataframe(monthly_compliance.style.format({'Ratio_Cumplimiento': "{:.2f}%"}))
             else:
-                st.info("No hay suficientes datos de cierre para calcular el ratio de cumplimiento con los filtros actuales.")
+                st.info("No hay suficientes datos de cierre para calcular el ratio de cumplimiento.")
 
 else:
-    st.info("Cargando datos... Por favor, asegúrate de que el archivo 'PDS - Hoja1.csv' está disponible.")
+    st.warning("Esperando a que los datos se carguen...")
