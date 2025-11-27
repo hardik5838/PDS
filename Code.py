@@ -1,210 +1,202 @@
 import streamlit as st
 import pandas as pd
 import plotly.express as px
-import plotly.graph_objects as go
+import time
 
-# --- Page Config ---
+# --- Page Configuration ---
 st.set_page_config(
-    page_title="Dashboard de Mantenimiento Avanzado",
-    page_icon="🏗️",
+    page_title="Dashboard Ejecutivo",
+    page_icon="📊",
     layout="wide",
-    initial_sidebar_state="collapsed" # Starts with more screen real estate
+    initial_sidebar_state="collapsed"
 )
 
-# --- 1. Compact & Optimized Data Loading ---
-@st.cache_data
-def load_data(file_path):
-    # We use a context manager for the loading status to keep it compact
+# --- HELPER: Simple Progress Bar ---
+def load_with_progress(file_path):
+    # Create placeholders
+    progress_text = "Iniciando sistema..."
+    my_bar = st.progress(0, text=progress_text)
+    
     try:
-        # Load Raw Data
-        df = pd.read_csv(file_path, sep=',', encoding='utf-8', on_bad_lines='skip')
+        # Step 1: Read File (20%)
+        my_bar.progress(20, text="📂 Leyendo archivo CSV...")
+        # Use on_bad_lines='skip' to avoid crashing on malformed rows
+        df = pd.read_csv(file_path, on_bad_lines='skip') 
         
-        # Clean Column Names
-        df.columns = df.columns.str.strip()
+        # Step 2: Clean Headers (40%)
+        my_bar.progress(40, text="🧹 Limpiando cabeceras...")
+        df.columns = df.columns.str.strip() # Remove hidden spaces
         
-        # Map specific column names based on your CSV structure
-        # Note: Adjust these if your CSV headers change slightly
+        # Mapping based on your provided RAW snippet
         col_map = {
             'Actual Start': 'Fecha_Inicio',
             'Planned Date': 'Fecha_Plan',
             'Status Description': 'Estado',
-            'Job Type': 'Tipo_Trabajo_Raw', # There are two Job Types, pandas usually suffixes the second
+            'Job Type': 'Tipo_Trabajo_Raw',
             'Urgency': 'Urgencia',
             'Center Name': 'Centro',
-            'Specialty': 'Especialidad',
             'Description': 'Descripcion',
             'Contractor': 'Contratista',
-            'Autonomous Community': 'CCAA'
+            'Autonomous Community': 'CCAA',
+            'Costs (€)': 'Coste'
         }
-        # Rename available columns safely
+        
+        # Rename only columns that exist
         df.rename(columns={k: v for k, v in col_map.items() if k in df.columns}, inplace=True)
+
+        # Step 3: Date Conversion (60%)
+        my_bar.progress(60, text="📅 Normalizando fechas...")
+        if 'Fecha_Plan' in df.columns:
+            df['Fecha_Plan'] = pd.to_datetime(df['Fecha_Plan'], format='%d/%m/%Y', errors='coerce')
+            # Remove rows where date is invalid
+            df = df.dropna(subset=['Fecha_Plan'])
+        else:
+            st.error(f"Error Crítico: No se encontró la columna 'Planned Date'. Columnas detectadas: {list(df.columns)}")
+            st.stop()
+
+        # Step 4: Categorization Logic (80%)
+        my_bar.progress(80, text="⚙️ Clasificando tipos de trabajo...")
         
-        # Date Conversion
-        df['Fecha_Plan'] = pd.to_datetime(df['Fecha_Plan'], format='%d/%m/%Y', errors='coerce')
-        
-        # Feature Engineering: Extract "Work Type" (COR, PRV) from the code
-        # Assuming format like "H001COR" -> COR
-        def extract_type(code):
-            code = str(code).upper()
-            if 'COR' in code: return 'Correctivo'
-            if 'PRV' in code: return 'Preventivo'
-            if 'MOD' in code: return 'Modificativo'
+        def get_category(val):
+            val = str(val).upper()
+            if 'COR' in val: return 'Correctivo'
+            if 'PRV' in val: return 'Preventivo'
             return 'Otros'
 
         if 'Tipo_Trabajo_Raw' in df.columns:
-            df['Tipo_Categoria'] = df['Tipo_Trabajo_Raw'].apply(extract_type)
+            df['Categoria'] = df['Tipo_Trabajo_Raw'].apply(get_category)
         else:
-            df['Tipo_Categoria'] = 'Desconocido'
+            df['Categoria'] = 'Desconocido'
 
+        # Step 5: Finish (100%)
+        my_bar.progress(100, text="✅ Carga completa")
+        time.sleep(0.5) # Short pause to see 100%
+        my_bar.empty() # REMOVES the bar from screen
+        
         return df
 
     except Exception as e:
-        st.error(f"Error cargando datos: {e}")
+        my_bar.empty()
+        st.error(f"Error detallado: {e}")
         return pd.DataFrame()
 
-# --- Load Data with Status Animation ---
-with st.status("🔄 Procesando archivo maestro...", expanded=True) as status:
-    st.write("📂 Leyendo CSV crudo...")
-    df = load_data('PDS - Hoja1.csv') # CHANGE THIS TO YOUR FILE PATH
-    st.write("🛠️ Normalizando fechas y categorías...")
-    st.write("📊 Calculando métricas iniciales...")
-    status.update(label="✅ Datos cargados y listos para análisis", state="complete", expanded=False)
+# --- MAIN EXECUTION ---
+
+# 1. Load Data
+df = load_with_progress('PDS - Hoja1.csv') # CHECK FILE NAME
 
 if df.empty:
     st.stop()
 
-# --- 2. Granular Top Filter Bar ---
-st.title("🏗️ Control de Mantenimiento e Incidencias")
+# 2. TOP LEVEL SEGMENTATION (The "Switch")
+st.title("📊 Análisis de Mantenimiento e Incidencias")
 
-with st.expander("🔍 FILTROS AVANZADOS (Click para expandir)", expanded=True):
-    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
-    
-    with col_f1:
-        # Date Filter
-        min_date = df['Fecha_Plan'].min()
-        max_date = df['Fecha_Plan'].max()
-        date_range = st.date_input("Rango de Fechas", [min_date, max_date])
-
-    with col_f2:
-        # Work Category Filter (The extracted logic)
-        selected_cats = st.multiselect("Categoría Trabajo", df['Tipo_Categoria'].unique(), default=df['Tipo_Categoria'].unique())
-        
-    with col_f3:
-        # Status Filter
-        selected_status = st.multiselect("Estado", df['Estado'].unique(), default=df['Estado'].unique())
-
-    with col_f4:
-        # Urgency Filter
-        if 'Urgencia' in df.columns:
-            selected_urgency = st.multiselect("Urgencia", df['Urgencia'].unique(), default=df['Urgencia'].unique())
-        else:
-            selected_urgency = []
-
-    # Secondary Row of Filters
-    col_f5, col_f6 = st.columns(2)
-    with col_f5:
-        selected_ccaa = st.multiselect("Comunidad Autónoma", df['CCAA'].unique())
-    with col_f6:
-         # Search bar for text
-        search_text = st.text_input("Búsqueda por palabra clave en Descripción (ej. 'Puerta', 'Agua')")
-
-# --- Apply Filters ---
-mask = (
-    (df['Fecha_Plan'] >= pd.to_datetime(date_range[0])) & 
-    (df['Fecha_Plan'] <= pd.to_datetime(date_range[1])) &
-    (df['Tipo_Categoria'].isin(selected_cats)) &
-    (df['Estado'].isin(selected_status))
+# This creates a big toggle at the top
+view_mode = st.radio(
+    "Seleccione Vista Principal:",
+    ["🌍 VISIÓN GLOBAL", "🔧 SOLO CORRECTIVOS", "🛡️ SOLO PREVENTIVOS"],
+    horizontal=True,
+    label_visibility="collapsed" # Hides the label to make it cleaner
 )
 
-if selected_urgency:
-    mask = mask & (df['Urgencia'].isin(selected_urgency))
-if selected_ccaa:
-    mask = mask & (df['CCAA'].isin(selected_ccaa))
-if search_text:
-    mask = mask & (df['Descripcion'].str.contains(search_text, case=False, na=False))
-
-df_filtered = df[mask]
-
-# --- KPI Summary Row ---
-kpi1, kpi2, kpi3, kpi4 = st.columns(4)
-kpi1.metric("Total Órdenes", f"{len(df_filtered):,}")
-kpi2.metric("Correctivos", len(df_filtered[df_filtered['Tipo_Categoria']=='Correctivo']))
-kpi3.metric("Preventivos", len(df_filtered[df_filtered['Tipo_Categoria']=='Preventivo']))
-# Calculate % Urgent
-urgent_count = len(df_filtered[df_filtered['Urgencia'] != 'Not Urgent'])
-urgent_pct = (urgent_count / len(df_filtered) * 100) if len(df_filtered) > 0 else 0
-kpi4.metric("% Urgencia", f"{urgent_pct:.1f}%")
+# Apply Top Filter immediately
+if view_mode == "🔧 SOLO CORRECTIVOS":
+    df_view = df[df['Categoria'] == 'Correctivo']
+elif view_mode == "🛡️ SOLO PREVENTIVOS":
+    df_view = df[df['Categoria'] == 'Preventivo']
+else:
+    df_view = df.copy()
 
 st.markdown("---")
 
-# --- 3. Advanced Charts (5 New Charts) ---
+# 3. SIDEBAR FILTERS (Granular)
+st.sidebar.header("Filtros Detallados")
 
-# Row 1: Time Analysis & Urgency Heatmap
+# Date Filter
+min_d, max_d = df_view['Fecha_Plan'].min(), df_view['Fecha_Plan'].max()
+date_range = st.sidebar.date_input("Rango de Fechas", [min_d, max_d])
+
+# CCAA Filter (Higher Level)
+all_ccaa = sorted(df_view['CCAA'].dropna().unique())
+sel_ccaa = st.sidebar.multiselect("Comunidad Autónoma", all_ccaa, default=all_ccaa)
+
+# Status Filter
+all_status = sorted(df_view['Estado'].dropna().unique())
+sel_status = st.sidebar.multiselect("Estado", all_status, default=all_status)
+
+# Apply Sidebar Filters
+mask = (
+    (df_view['Fecha_Plan'] >= pd.to_datetime(date_range[0])) &
+    (df_view['Fecha_Plan'] <= pd.to_datetime(date_range[1])) &
+    (df_view['CCAA'].isin(sel_ccaa)) &
+    (df_view['Estado'].isin(sel_status))
+)
+df_final = df_view[mask]
+
+# --- 4. DASHBOARD CONTENT ---
+
+# KPI Row
+k1, k2, k3, k4 = st.columns(4)
+k1.metric("Total Órdenes", f"{len(df_final):,}")
+k2.metric("Comunidades Activas", df_final['CCAA'].nunique())
+k3.metric("Centros Afectados", df_final['Centro'].nunique())
+most_freq_contractor = df_final['Contratista'].mode()[0] if not df_final.empty else "N/A"
+k4.metric("Contratista Principal", most_freq_contractor)
+
+# CHART ROW 1: Community Overview (High Level)
 c1, c2 = st.columns([2, 1])
 
 with c1:
-    st.subheader("📈 Evolución Temporal por Categoría")
-    # Group by Month and Category
-    df_time = df_filtered.copy()
-    df_time['Mes'] = df_time['Fecha_Plan'].dt.to_period('M').astype(str)
-    df_agg = df_time.groupby(['Mes', 'Tipo_Categoria']).size().reset_index(name='Count')
-    
-    fig_area = px.area(df_agg, x="Mes", y="Count", color="Tipo_Categoria", 
-                       title="Volumen de trabajo en el tiempo", markers=True)
-    st.plotly_chart(fig_area, use_container_width=True)
+    st.subheader(f"🗺️ Volumen por Comunidad Autónoma ({view_mode})")
+    # Group by CCAA
+    by_ccaa = df_final.groupby('CCAA').size().reset_index(name='Total').sort_values('Total', ascending=True)
+    fig_ccaa = px.bar(by_ccaa, x='Total', y='CCAA', orientation='h', text='Total', color='Total')
+    fig_ccaa.update_layout(height=400)
+    st.plotly_chart(fig_ccaa, use_container_width=True)
 
 with c2:
-    st.subheader("🔥 Mapa de Calor: Estado vs Urgencia")
-    if 'Urgencia' in df_filtered.columns:
-        df_heat = df_filtered.groupby(['Estado', 'Urgencia']).size().reset_index(name='Count')
-        fig_heat = px.density_heatmap(df_heat, x="Estado", y="Urgencia", z="Count", 
-                                      text_auto=True, color_continuous_scale="Viridis",
-                                      title="Concentración de Incidencias")
-        st.plotly_chart(fig_heat, use_container_width=True)
+    st.subheader("⚠️ Distribución de Urgencia")
+    if 'Urgencia' in df_final.columns:
+        fig_urg = px.pie(df_final, names='Urgencia', hole=0.5, color_discrete_sequence=px.colors.sequential.RdBu)
+        st.plotly_chart(fig_urg, use_container_width=True)
 
-# Row 2: Specialty & Contractor Analysis
-c3, c4, c5 = st.columns(3)
+# CHART ROW 2: Time & Relations
+c3, c4 = st.columns(2)
 
 with c3:
-    st.subheader("🛠️ Top Especialidades")
-    if 'Especialidad' in df_filtered.columns:
-        top_spec = df_filtered['Especialidad'].value_counts().head(10).reset_index()
-        top_spec.columns = ['Especialidad', 'Total']
-        fig_bar = px.bar(top_spec, x='Total', y='Especialidad', orientation='h', 
-                         title="Especialidades más demandadas", color='Total')
-        st.plotly_chart(fig_bar, use_container_width=True)
+    st.subheader("📅 Evolución Temporal")
+    # Group by Month and CCAA (Top 5 CCAA to avoid clutter)
+    df_time = df_final.copy()
+    df_time['Mes'] = df_time['Fecha_Plan'].dt.to_period('M').astype(str)
+    
+    top_5_ccaa = df_final['CCAA'].value_counts().head(5).index
+    df_time_filtered = df_time[df_time['CCAA'].isin(top_5_ccaa)]
+    
+    by_time = df_time_filtered.groupby(['Mes', 'CCAA']).size().reset_index(name='Ordenes')
+    fig_line = px.line(by_time, x='Mes', y='Ordenes', color='CCAA', markers=True)
+    st.plotly_chart(fig_line, use_container_width=True)
 
 with c4:
-    st.subheader("👷 Top Contratistas")
-    if 'Contratista' in df_filtered.columns:
-        top_cont = df_filtered['Contratista'].value_counts().head(10)
-        fig_pie = px.pie(values=top_cont.values, names=top_cont.index, hole=0.4,
-                         title="Distribución por Contratista")
-        st.plotly_chart(fig_pie, use_container_width=True)
+    st.subheader("🏗️ Estado vs Comunidad (Heatmap)")
+    heatmap_data = df_final.groupby(['CCAA', 'Estado']).size().reset_index(name='Count')
+    fig_heat = px.density_heatmap(heatmap_data, x='CCAA', y='Estado', z='Count', text_auto=True, color_continuous_scale='Blues')
+    st.plotly_chart(fig_heat, use_container_width=True)
 
-with c5:
-    st.subheader("📊 Distribución de Estado")
-    fig_funnel = px.funnel(df_filtered['Estado'].value_counts().reset_index(), 
-                           x='count', y='Estado', title="Funnel de Estados")
-    st.plotly_chart(fig_funnel, use_container_width=True)
+# --- 5. SUMMARY TABLE (Concise) ---
+st.markdown("### 📑 Resumen Ejecutivo")
 
-# --- 4. Concise Summary Table ---
-st.markdown("---")
-st.subheader("📑 Detalle de Órdenes Filtradas (Vista Concisa)")
-
-# Select only high-value columns for the summary to keep it clean
-cols_to_show = ['Fecha_Plan', 'Tipo_Categoria', 'Descripcion', 'Centro', 'Estado', 'Urgencia', 'Contratista']
-# Ensure columns exist before selecting
-available_cols = [c for c in cols_to_show if c in df_filtered.columns]
+# Selecting only helpful columns for the user
+cols_wanted = ['Fecha_Plan', 'CCAA', 'Centro', 'Descripcion', 'Estado', 'Contratista', 'Urgencia']
+final_cols = [c for c in cols_wanted if c in df_final.columns]
 
 st.dataframe(
-    df_filtered[available_cols].sort_values(by='Fecha_Plan', ascending=False),
+    df_final[final_cols].sort_values('Fecha_Plan', ascending=False),
     use_container_width=True,
     hide_index=True,
     column_config={
-        "Fecha_Plan": st.column_config.DateColumn("Fecha Plan", format="DD/MM/YYYY"),
-        "Descripcion": st.column_config.TextColumn("Descripción", width="large"),
-        "Tipo_Categoria": st.column_config.TextColumn("Tipo", width="small"),
-        "Estado": st.column_config.Column("Estado", width="medium"),
+        "Fecha_Plan": st.column_config.DateColumn("Fecha", format="DD/MM/YYYY"),
+        "CCAA": st.column_config.TextColumn("Región", width="small"),
+        "Descripcion": st.column_config.TextColumn("Detalle Trabajo", width="large"),
+        "Estado": st.column_config.Column("Estado Actual", width="medium")
     }
 )
