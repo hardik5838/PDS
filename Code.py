@@ -1,247 +1,210 @@
-# Import necessary libraries
 import streamlit as st
 import pandas as pd
 import plotly.express as px
 import plotly.graph_objects as go
 
-# --- Page Configuration ---
+# --- Page Config ---
 st.set_page_config(
-    page_title="Dashboard de Mantenimiento - Asepeyo",
-    page_icon="📊",
+    page_title="Dashboard de Mantenimiento Avanzado",
+    page_icon="🏗️",
     layout="wide",
+    initial_sidebar_state="collapsed" # Starts with more screen real estate
 )
 
-# --- OPTIMIZED Data Loading and Caching ---
+# --- 1. Compact & Optimized Data Loading ---
 @st.cache_data
 def load_data(file_path):
-    """
-    Loads and processes data from a large CSV file using memory-efficient techniques.
-    """
+    # We use a context manager for the loading status to keep it compact
     try:
-        st.info("Iniciando la carga optimizada del archivo CSV...")
-
-        # --- Optimization 1: Specify only the columns we need ---
-        # This prevents loading the entire large file into memory.
-        columns_to_load = [
-            'Fecha Planificada', 'Fecha cierre', 'CCAA', 'Nombre Centro',
-            'Desc. Equipo', 'Tipo Trabajo', 'Desc. Estado', 'Contratista'
-        ]
-
-        # --- Optimization 2: Specify efficient data types ---
-        # Using 'category' for repetitive text columns saves a lot of memory.
-        data_types = {
-            'CCAA': 'category',
-            'Nombre Centro': 'category',
-            'Desc. Equipo': 'category',
-            'Tipo Trabajo': 'category',
-            'Desc. Estado': 'category',
-            'Contratista': 'category'
-        }
-
-        # Load the data with the optimizations
-        df = pd.read_csv(file_path, usecols=columns_to_load, dtype=data_types)
+        # Load Raw Data
+        df = pd.read_csv(file_path, sep=',', encoding='utf-8', on_bad_lines='skip')
         
-        st.info(f"✅ Archivo CSV cargado con éxito. {len(df):,} filas procesadas.")
-        
-        # --- Data Cleaning and Preparation ---
-        st.info("Limpiando y preparando los datos...")
+        # Clean Column Names
         df.columns = df.columns.str.strip()
-        df.rename(columns={
-            'Nombre Centro': 'Centro',
-            'Desc. Estado': 'Estado',
-            'Desc. Equipo': 'Instalacion',
-            'Tipo Trabajo': 'Tipo_Trabajo',
-            'Fecha Planificada': 'Fecha_Planificada',
-            'Fecha cierre': 'Fecha_Cierre'
-        }, inplace=True)
-
-        # Efficient Date Conversion
-        st.info("Convirtiendo columnas de fecha...")
-        df['Fecha_Planificada'] = pd.to_datetime(df['Fecha_Planificada'], format='%d/%m/%Y', errors='coerce')
-        df['Fecha_Cierre'] = pd.to_datetime(df['Fecha_Cierre'], format='%d/%m/%Y', errors='coerce')
-        st.info("✅ Fechas convertidas.")
         
-        df.dropna(subset=['Fecha_Planificada'], inplace=True)
-
-        df['Año'] = df['Fecha_Planificada'].dt.year
-        df['Mes'] = df['Fecha_Planificada'].dt.month
+        # Map specific column names based on your CSV structure
+        # Note: Adjust these if your CSV headers change slightly
+        col_map = {
+            'Actual Start': 'Fecha_Inicio',
+            'Planned Date': 'Fecha_Plan',
+            'Status Description': 'Estado',
+            'Job Type': 'Tipo_Trabajo_Raw', # There are two Job Types, pandas usually suffixes the second
+            'Urgency': 'Urgencia',
+            'Center Name': 'Centro',
+            'Specialty': 'Especialidad',
+            'Description': 'Descripcion',
+            'Contractor': 'Contratista',
+            'Autonomous Community': 'CCAA'
+        }
+        # Rename available columns safely
+        df.rename(columns={k: v for k, v in col_map.items() if k in df.columns}, inplace=True)
         
-        st.info("Agrupando tipos de trabajo...")
-        def clean_tipo_trabajo(tipo):
-            if not isinstance(tipo, str):
-                tipo = str(tipo)
-            
-            tipo_upper = tipo.upper()
-            if 'COR' in tipo_upper: return 'Correctivo'
-            if 'PRV' in tipo_upper: return 'Preventivo'
-            if 'SIN' in tipo_upper: return 'Siniestro'
-            if 'INS' in tipo_upper: return 'Inspeccion'
-            return 'Otro'
-
-        df['Tipo_Trabajo_Agrupado'] = df['Tipo_Trabajo'].apply(clean_tipo_trabajo)
-        st.success("🎉 ¡Datos listos para el análisis!")
+        # Date Conversion
+        df['Fecha_Plan'] = pd.to_datetime(df['Fecha_Plan'], format='%d/%m/%Y', errors='coerce')
         
+        # Feature Engineering: Extract "Work Type" (COR, PRV) from the code
+        # Assuming format like "H001COR" -> COR
+        def extract_type(code):
+            code = str(code).upper()
+            if 'COR' in code: return 'Correctivo'
+            if 'PRV' in code: return 'Preventivo'
+            if 'MOD' in code: return 'Modificativo'
+            return 'Otros'
+
+        if 'Tipo_Trabajo_Raw' in df.columns:
+            df['Tipo_Categoria'] = df['Tipo_Trabajo_Raw'].apply(extract_type)
+        else:
+            df['Tipo_Categoria'] = 'Desconocido'
+
         return df
 
-    except FileNotFoundError:
-        st.error(f"Error: El archivo '{file_path}' no se encontró.")
-        return pd.DataFrame()
     except Exception as e:
-        st.error(f"Ocurrió un error al procesar el archivo: {e}")
+        st.error(f"Error cargando datos: {e}")
         return pd.DataFrame()
 
-# Load the data using the optimized function
-df = load_data('PDS - Hoja1.csv')
+# --- Load Data with Status Animation ---
+with st.status("🔄 Procesando archivo maestro...", expanded=True) as status:
+    st.write("📂 Leyendo CSV crudo...")
+    df = load_data('PDS - Hoja1.csv') # CHANGE THIS TO YOUR FILE PATH
+    st.write("🛠️ Normalizando fechas y categorías...")
+    st.write("📊 Calculando métricas iniciales...")
+    status.update(label="✅ Datos cargados y listos para análisis", state="complete", expanded=False)
 
-if not df.empty:
-    # --- Sidebar for Filters ---
-    st.sidebar.header('Filtros del Dashboard')
+if df.empty:
+    st.stop()
 
-    # Date Range Filter
-    min_date = df['Fecha_Planificada'].min().date()
-    max_date = df['Fecha_Planificada'].max().date()
-    start_date = st.sidebar.date_input('Fecha de inicio', min_date, min_value=min_date, max_value=max_date)
-    end_date = st.sidebar.date_input('Fecha de fin', max_date, min_value=min_date, max_value=max_date)
+# --- 2. Granular Top Filter Bar ---
+st.title("🏗️ Control de Mantenimiento e Incidencias")
 
-    start_datetime = pd.to_datetime(start_date)
-    end_datetime = pd.to_datetime(end_date)
+with st.expander("🔍 FILTROS AVANZADOS (Click para expandir)", expanded=True):
+    col_f1, col_f2, col_f3, col_f4 = st.columns(4)
+    
+    with col_f1:
+        # Date Filter
+        min_date = df['Fecha_Plan'].min()
+        max_date = df['Fecha_Plan'].max()
+        date_range = st.date_input("Rango de Fechas", [min_date, max_date])
 
-    df_filtered = df[(df['Fecha_Planificada'] >= start_datetime) & (df['Fecha_Planificada'] <= end_datetime)].copy()
+    with col_f2:
+        # Work Category Filter (The extracted logic)
+        selected_cats = st.multiselect("Categoría Trabajo", df['Tipo_Categoria'].unique(), default=df['Tipo_Categoria'].unique())
+        
+    with col_f3:
+        # Status Filter
+        selected_status = st.multiselect("Estado", df['Estado'].unique(), default=df['Estado'].unique())
 
-    # --- Geographic Filters (dynamic) ---
-    st.sidebar.subheader('Filtros Geográficos')
-    default_communities = sorted(df_filtered['CCAA'].dropna().unique().tolist())
-    selected_communities = st.sidebar.multiselect('Comunidad Autónoma', default_communities, default=default_communities)
-
-    if selected_communities:
-        df_filtered = df_filtered[df_filtered['CCAA'].isin(selected_communities)]
-
-    if not df_filtered.empty:
-        default_centros = sorted(df_filtered['Centro'].dropna().unique().tolist())
-        selected_centros = st.sidebar.multiselect('Centro', default_centros, default=default_centros)
-        if selected_centros:
-            df_filtered = df_filtered[df_filtered['Centro'].isin(selected_centros)]
-
-    if not df_filtered.empty:
-        default_instalaciones = sorted(df_filtered['Instalacion'].dropna().unique().tolist())
-        selected_instalaciones = st.sidebar.multiselect('Instalación', default_instalaciones, default=default_instalaciones)
-        if selected_instalaciones:
-            df_filtered = df_filtered[df_filtered['Instalacion'].isin(selected_instalaciones)]
-
-    # --- Main Dashboard Area ---
-    st.title("Dashboard de Órdenes de Trabajo")
-
-    # Create tabs
-    tab1, tab2 = st.tabs(["Análisis ASEPEYO", "Análisis CONTRATISTAS"])
-
-    # --- ASEPEYO TAB ---
-    with tab1:
-        st.header("Análisis de Órdenes de Trabajo de ASEPEYO")
-
-        if df_filtered.empty:
-            st.warning("No hay datos disponibles para los filtros seleccionados.")
+    with col_f4:
+        # Urgency Filter
+        if 'Urgencia' in df.columns:
+            selected_urgency = st.multiselect("Urgencia", df['Urgencia'].unique(), default=df['Urgencia'].unique())
         else:
-            # --- KPIs ---
-            st.subheader("Indicadores Clave de Rendimiento (KPIs)")
-            kpi_cols = st.columns(4)
-            tipos_trabajo = ['Preventivo', 'Correctivo', 'Siniestro', 'Inspeccion']
-            for i, tipo in enumerate(tipos_trabajo):
-                count = df_filtered[df_filtered['Tipo_Trabajo_Agrupado'] == tipo].shape[0]
-                kpi_cols[i].metric(label=f"Total {tipo}s", value=f"{count:,}")
-            
-            st.markdown("---")
+            selected_urgency = []
 
-            # --- Visualizations ---
-            col1, col2 = st.columns(2)
+    # Secondary Row of Filters
+    col_f5, col_f6 = st.columns(2)
+    with col_f5:
+        selected_ccaa = st.multiselect("Comunidad Autónoma", df['CCAA'].unique())
+    with col_f6:
+         # Search bar for text
+        search_text = st.text_input("Búsqueda por palabra clave en Descripción (ej. 'Puerta', 'Agua')")
 
-            with col1:
-                st.subheader("Trabajos por Comunidad Autónoma")
-                df_grouped = df_filtered.groupby(['CCAA', 'Tipo_Trabajo_Agrupado']).size().reset_index(name='Conteo')
-                fig = px.bar(df_grouped, x='CCAA', y='Conteo', color='Tipo_Trabajo_Agrupado',
-                             title="Distribución de Trabajos por CCAA", barmode='stack')
-                fig.update_layout(xaxis={'categoryorder':'total descending'})
-                st.plotly_chart(fig, use_container_width=True)
+# --- Apply Filters ---
+mask = (
+    (df['Fecha_Plan'] >= pd.to_datetime(date_range[0])) & 
+    (df['Fecha_Plan'] <= pd.to_datetime(date_range[1])) &
+    (df['Tipo_Categoria'].isin(selected_cats)) &
+    (df['Estado'].isin(selected_status))
+)
 
-            with col2:
-                st.subheader("Trabajos por Centro")
-                df_grouped_centro = df_filtered.groupby(['Centro', 'Tipo_Trabajo_Agrupado']).size().reset_index(name='Conteo')
-                fig_centro = px.bar(df_grouped_centro, x='Centro', y='Conteo', color='Tipo_Trabajo_Agrupado',
-                                    title="Distribución de Trabajos por Centro", barmode='stack')
-                fig_centro.update_layout(xaxis={'categoryorder':'total descending'})
-                st.plotly_chart(fig_centro, use_container_width=True)
+if selected_urgency:
+    mask = mask & (df['Urgencia'].isin(selected_urgency))
+if selected_ccaa:
+    mask = mask & (df['CCAA'].isin(selected_ccaa))
+if search_text:
+    mask = mask & (df['Descripcion'].str.contains(search_text, case=False, na=False))
 
-            # --- Work Order Status Analysis ---
-            st.subheader("Análisis por Estado de Orden de Trabajo")
-            col_status1, col_status2 = st.columns(2)
+df_filtered = df[mask]
 
-            with col_status1:
-                st.markdown("**Estado de Preventivos y Correctivos**")
-                df_prv_cor = df_filtered[df_filtered['Tipo_Trabajo_Agrupado'].isin(['Preventivo', 'Correctivo'])]
-                status_counts = df_prv_cor['Estado'].value_counts()
-                fig_pie = px.pie(status_counts, names=status_counts.index, values=status_counts.values, 
-                                 title="Porcentaje por Estado (PRV y COR)", hole=0.3)
-                st.plotly_chart(fig_pie, use_container_width=True)
+# --- KPI Summary Row ---
+kpi1, kpi2, kpi3, kpi4 = st.columns(4)
+kpi1.metric("Total Órdenes", f"{len(df_filtered):,}")
+kpi2.metric("Correctivos", len(df_filtered[df_filtered['Tipo_Categoria']=='Correctivo']))
+kpi3.metric("Preventivos", len(df_filtered[df_filtered['Tipo_Categoria']=='Preventivo']))
+# Calculate % Urgent
+urgent_count = len(df_filtered[df_filtered['Urgencia'] != 'Not Urgent'])
+urgent_pct = (urgent_count / len(df_filtered) * 100) if len(df_filtered) > 0 else 0
+kpi4.metric("% Urgencia", f"{urgent_pct:.1f}%")
 
-            with col_status2:
-                st.markdown("**Emisión Mensual de Correctivos**")
-                df_correctivos = df_filtered[df_filtered['Tipo_Trabajo_Agrupado'] == 'Correctivo'].copy()
-                df_correctivos['Mes_Año'] = df_correctivos['Fecha_Planificada'].dt.to_period('M').astype(str)
-                monthly_correctives = df_correctivos.groupby('Mes_Año').size().reset_index(name='Conteo')
-                monthly_correctives.sort_values('Mes_Año', inplace=True)
-                
-                fig_line = px.line(monthly_correctives, x='Mes_Año', y='Conteo',
-                                   title="Evolución Mensual de Correctivos Emitidos", markers=True)
-                fig_line.update_layout(xaxis_title="Mes", yaxis_title="Número de Correctivos")
-                st.plotly_chart(fig_line, use_container_width=True)
+st.markdown("---")
 
-    # --- CONTRATISTAS TAB ---
-    with tab2:
-        st.header("Análisis de Rendimiento de Contratistas")
+# --- 3. Advanced Charts (5 New Charts) ---
 
-        if df_filtered.empty:
-            st.warning("No hay datos disponibles para los filtros seleccionados.")
-        else:
-            # --- Contractor Workload Analysis ---
-            st.subheader("Distribución de Trabajo por Contratista")
-            contratista_counts = df_filtered['Contratista'].value_counts().nlargest(20) # Top 20
-            fig_contratista = px.bar(contratista_counts, x=contratista_counts.index, y=contratista_counts.values,
-                                     title="Top 20 Contratistas por Nº de Órdenes de Trabajo")
-            fig_contratista.update_layout(xaxis_title="Contratista", yaxis_title="Número de Órdenes",
-                                          xaxis={'categoryorder':'total descending'})
-            st.plotly_chart(fig_contratista, use_container_width=True)
+# Row 1: Time Analysis & Urgency Heatmap
+c1, c2 = st.columns([2, 1])
 
-            # --- Work Order Status by Contractor ---
-            st.subheader("Estado de las Órdenes de Trabajo por Contratista")
-            df_contratista_status = df_filtered.groupby(['Contratista', 'Estado']).size().reset_index(name='Conteo')
-            fig_status_contratista = px.bar(df_contratista_status, x='Contratista', y='Conteo', color='Estado',
-                                            title="Desglose de Estados por Contratista", barmode='stack')
-            fig_status_contratista.update_layout(xaxis={'categoryorder':'total descending'})
-            st.plotly_chart(fig_status_contratista, use_container_width=True)
+with c1:
+    st.subheader("📈 Evolución Temporal por Categoría")
+    # Group by Month and Category
+    df_time = df_filtered.copy()
+    df_time['Mes'] = df_time['Fecha_Plan'].dt.to_period('M').astype(str)
+    df_agg = df_time.groupby(['Mes', 'Tipo_Categoria']).size().reset_index(name='Count')
+    
+    fig_area = px.area(df_agg, x="Mes", y="Count", color="Tipo_Categoria", 
+                       title="Volumen de trabajo en el tiempo", markers=True)
+    st.plotly_chart(fig_area, use_container_width=True)
 
-            # --- Compliance Ratio ---
-            st.subheader("Ratio de Cumplimiento (Órdenes Cerradas en el Mismo Mes)")
-            df_ratio = df_filtered.dropna(subset=['Fecha_Planificada', 'Fecha_Cierre']).copy()
-            
-            df_ratio['Mismo_Mes'] = df_ratio['Fecha_Planificada'].dt.month == df_ratio['Fecha_Cierre'].dt.month
-            df_ratio['Mes_Creacion'] = df_ratio['Fecha_Planificada'].dt.to_period('M').astype(str)
-            
-            monthly_compliance = df_ratio.groupby('Mes_Creacion')['Mismo_Mes'].agg(['count', 'sum']).reset_index()
-            monthly_compliance.rename(columns={'count': 'Total_Abiertas', 'sum': 'Cerradas_Mismo_Mes'}, inplace=True)
-            
-            if not monthly_compliance.empty and monthly_compliance['Total_Abiertas'].sum() > 0:
-                monthly_compliance['Ratio_Cumplimiento'] = (monthly_compliance['Cerradas_Mismo_Mes'] / monthly_compliance['Total_Abiertas']) * 100
-            
-                st.write("Este ratio muestra el porcentaje de órdenes de trabajo que se cerraron en el mismo mes en que se planificaron.")
-                
-                fig_ratio = go.Figure()
-                fig_ratio.add_trace(go.Bar(x=monthly_compliance['Mes_Creacion'], y=monthly_compliance['Total_Abiertas'], name='Total Abiertas', marker_color='lightblue'))
-                fig_ratio.add_trace(go.Bar(x=monthly_compliance['Mes_Creacion'], y=monthly_compliance['Cerradas_Mismo_Mes'], name='Cerradas Mismo Mes', marker_color='blue'))
-                fig_ratio.update_layout(title='Órdenes Abiertas vs. Cerradas en el Mismo Mes', barmode='overlay')
-                st.plotly_chart(fig_ratio, use_container_width=True)
+with c2:
+    st.subheader("🔥 Mapa de Calor: Estado vs Urgencia")
+    if 'Urgencia' in df_filtered.columns:
+        df_heat = df_filtered.groupby(['Estado', 'Urgencia']).size().reset_index(name='Count')
+        fig_heat = px.density_heatmap(df_heat, x="Estado", y="Urgencia", z="Count", 
+                                      text_auto=True, color_continuous_scale="Viridis",
+                                      title="Concentración de Incidencias")
+        st.plotly_chart(fig_heat, use_container_width=True)
 
-                st.dataframe(monthly_compliance.style.format({'Ratio_Cumplimiento': "{:.2f}%"}))
-            else:
-                st.info("No hay suficientes datos de cierre para calcular el ratio de cumplimiento.")
+# Row 2: Specialty & Contractor Analysis
+c3, c4, c5 = st.columns(3)
 
-else:
-    st.warning("Esperando a que los datos se carguen...")
+with c3:
+    st.subheader("🛠️ Top Especialidades")
+    if 'Especialidad' in df_filtered.columns:
+        top_spec = df_filtered['Especialidad'].value_counts().head(10).reset_index()
+        top_spec.columns = ['Especialidad', 'Total']
+        fig_bar = px.bar(top_spec, x='Total', y='Especialidad', orientation='h', 
+                         title="Especialidades más demandadas", color='Total')
+        st.plotly_chart(fig_bar, use_container_width=True)
+
+with c4:
+    st.subheader("👷 Top Contratistas")
+    if 'Contratista' in df_filtered.columns:
+        top_cont = df_filtered['Contratista'].value_counts().head(10)
+        fig_pie = px.pie(values=top_cont.values, names=top_cont.index, hole=0.4,
+                         title="Distribución por Contratista")
+        st.plotly_chart(fig_pie, use_container_width=True)
+
+with c5:
+    st.subheader("📊 Distribución de Estado")
+    fig_funnel = px.funnel(df_filtered['Estado'].value_counts().reset_index(), 
+                           x='count', y='Estado', title="Funnel de Estados")
+    st.plotly_chart(fig_funnel, use_container_width=True)
+
+# --- 4. Concise Summary Table ---
+st.markdown("---")
+st.subheader("📑 Detalle de Órdenes Filtradas (Vista Concisa)")
+
+# Select only high-value columns for the summary to keep it clean
+cols_to_show = ['Fecha_Plan', 'Tipo_Categoria', 'Descripcion', 'Centro', 'Estado', 'Urgencia', 'Contratista']
+# Ensure columns exist before selecting
+available_cols = [c for c in cols_to_show if c in df_filtered.columns]
+
+st.dataframe(
+    df_filtered[available_cols].sort_values(by='Fecha_Plan', ascending=False),
+    use_container_width=True,
+    hide_index=True,
+    column_config={
+        "Fecha_Plan": st.column_config.DateColumn("Fecha Plan", format="DD/MM/YYYY"),
+        "Descripcion": st.column_config.TextColumn("Descripción", width="large"),
+        "Tipo_Categoria": st.column_config.TextColumn("Tipo", width="small"),
+        "Estado": st.column_config.Column("Estado", width="medium"),
+    }
+)
