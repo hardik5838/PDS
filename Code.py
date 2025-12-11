@@ -24,31 +24,26 @@ st.markdown("""
 """, unsafe_allow_html=True)
 
 
+# --- 3. ROBUST ENGINE (CRASH PROOF) ---
 @st.cache_data
 def load_data_engine(file_path):
     with st.spinner("🚀 Cargando Motor de Análisis..."):
         try:
-            # CORRECCIÓN: Se añade sep=';' para leer correctamente tu archivo
-            df = pd.read_csv(file_path, encoding='latin-1', on_bad_lines='skip', sep=';')
+            # INTENTO 1: Latin-1 con separador de punto y coma
+            df = pd.read_csv(file_path, encoding='latin-1', sep=';', on_bad_lines='skip')
         except:
             try:
-                # Intento secundario con utf-8 y separador ;
-                df = pd.read_csv(file_path, encoding='utf-8', on_bad_lines='skip', sep=';')
+                # INTENTO 2: UTF-8 con separador de punto y coma
+                df = pd.read_csv(file_path, encoding='utf-8', sep=';', on_bad_lines='skip')
             except:
-                # Último intento: dejar que Python detecte el separador automáticamente
+                # INTENTO 3: Detección automática (más lento pero seguro)
                 df = pd.read_csv(file_path, sep=None, engine='python', on_bad_lines='skip')
 
-        # 1. CLEAN HEADERS
+        # 1. LIMPIEZA DE CABECERAS
         df.columns = df.columns.str.strip().str.upper()
-        
-        # ... (resto del código de la función)
-        return df # Asegúrate de que la función devuelve el df
 
-
-
-        
-
-        # 2. MAP COLUMNS (SPANISH -> SYSTEM)
+        # 2. MAPEO DE COLUMNAS (ESPAÑOL -> SISTEMA)
+        # Esto es crucial para que 'FECHA PLANIFICADA' se convierta en 'Fecha'
         col_map = {
             'FECHA PLANIFICADA': 'Fecha', 'PLANNED DATE': 'Fecha',
             'DESC. ESTADO': 'Estado', 'STATUS DESCRIPTION': 'Estado',
@@ -56,24 +51,19 @@ def load_data_engine(file_path):
             'NOMBRE CENTRO': 'Centro', 'CENTER NAME': 'Centro',
             'DESCRIPCIÓN': 'Descripcion', 'DESCRIPTION': 'Descripcion',
             'CONTRATISTA': 'Contratista', 'CONTRACTOR': 'Contratista',
-            'CCAA': 'CCAA', 'AUTONOMOUS COMMUNITY': 'CCAA',
-            'TIPO TRABAJO': 'Tipo', 'JOB TYPE': 'Tipo',
-            'ESPECIALIDAD': 'Especialidad', 'SPECIALTY': 'Especialidad',
-            'COSTES (€)': 'Coste', 'COSTS (€)': 'Coste',
-            'INICIO REAL': 'Inicio_Real'
+            'CCAA': 'CCAA', 'TIPO DE TRABAJO': 'Categoria'
         }
-        df.rename(columns={k: v for k, v in col_map.items() if k in df.columns}, inplace=True)
+        df.rename(columns=col_map, inplace=True)
+        
+        # 3. CONVERSIÓN DE FECHAS (FORMATO EUROPEO DIA/MES/AÑO)
+        if 'Fecha' in df.columns:
+            df['Fecha'] = pd.to_datetime(df['Fecha'], dayfirst=True, errors='coerce')
+            # Eliminar filas donde la fecha no se pudo leer (NaT)
+            df = df.dropna(subset=['Fecha'])
 
-        # 3. SAFETY CHECKS
-        if 'Fecha' not in df.columns:
-            # Try to find any date column
-            date_cols = [c for c in df.columns if 'DATE' in c or 'FECHA' in c]
-            if date_cols: df.rename(columns={date_cols[0]: 'Fecha'}, inplace=True)
-            else: return pd.DataFrame() # Return empty to handle gracefully
+        return df
 
-        # 4. PROCESSING
-        df['Fecha'] = pd.to_datetime(df['Fecha'], dayfirst=True, errors='coerce')
-        df = df.dropna(subset=['Fecha'])
+
         
         # Work Category Logic
         def categorize(val):
