@@ -23,17 +23,30 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. ROBUST ENGINE (CRASH PROOF) ---
+
 @st.cache_data
 def load_data_engine(file_path):
     with st.spinner("🚀 Cargando Motor de Análisis..."):
         try:
-            df = pd.read_csv(file_path, encoding='latin-1', on_bad_lines='skip')
+            # CORRECCIÓN: Se añade sep=';' para leer correctamente tu archivo
+            df = pd.read_csv(file_path, encoding='latin-1', on_bad_lines='skip', sep=';')
         except:
-            df = pd.read_csv(file_path, encoding='utf-8', on_bad_lines='skip')
+            try:
+                # Intento secundario con utf-8 y separador ;
+                df = pd.read_csv(file_path, encoding='utf-8', on_bad_lines='skip', sep=';')
+            except:
+                # Último intento: dejar que Python detecte el separador automáticamente
+                df = pd.read_csv(file_path, sep=None, engine='python', on_bad_lines='skip')
 
         # 1. CLEAN HEADERS
         df.columns = df.columns.str.strip().str.upper()
+        
+        # ... (resto del código de la función)
+        return df # Asegúrate de que la función devuelve el df
+
+
+
+        
 
         # 2. MAP COLUMNS (SPANISH -> SYSTEM)
         col_map = {
