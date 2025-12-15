@@ -285,12 +285,16 @@ with tab_perf:
         fig_fun = px.funnel(funnel_data, x='Count', y='Estado')
         st.plotly_chart(fig_fun, use_container_width=True)
 
+
 with tab_raw:
     cols_to_show = st.multiselect("Columnas", list(df_f.columns), default=list(df_f.columns)[:10])
+    
+    # FIX: Sort the full dataframe FIRST, then select the columns to display
     st.dataframe(
-        df_f[cols_to_show].sort_values('Fecha', ascending=False), 
+        df_f.sort_values('Fecha', ascending=False)[cols_to_show], 
         use_container_width=True,
         column_config={"Coste": st.column_config.NumberColumn(format="€ %.2f")}
     )
+    
     csv_data = df_f.to_csv(index=False).encode('utf-8')
     st.download_button("📥 DESCARGAR CSV", csv_data, "data_export.csv", "text/csv")
