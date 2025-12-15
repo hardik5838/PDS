@@ -55,12 +55,16 @@ def load_data_engine(file_path_or_buffer):
             'CONTRATISTA': 'Contratista', 'CONTRACTOR': 'Contratista',
             'CCAA': 'CCAA', 
             'TIPO DE TRABAJO': 'Categoria_Raw', 
-            'TIPO TRABAJO': 'Categoria_Raw',
+            'TIPO TRABAJO': 'Categoria_Raw',  # Tu archivo tiene AMBAS columnas
             'COSTES (€)': 'Coste',
             'ESPECIALIDAD': 'Especialidad',
             'INICIO REAL': 'Inicio_Real'
         }
         df.rename(columns=col_map, inplace=True)
+        
+        # --- FIX CRITICO: ELIMINAR COLUMNAS DUPLICADAS ---
+        # Si 'Categoria_Raw' aparece dos veces, nos quedamos solo con la primera.
+        df = df.loc[:, ~df.columns.duplicated()]
         
         # 3. CONVERSIÓN DE FECHAS
         if 'Fecha' in df.columns:
@@ -78,9 +82,9 @@ def load_data_engine(file_path_or_buffer):
             return 'Otros'
             
         if 'Categoria_Raw' in df.columns:
+            # Ahora esto es seguro porque 'Categoria_Raw' es única
             df['Categoria'] = df['Categoria_Raw'].apply(categorize)
         else:
-            # Fallback por si falla el mapeo
             df['Categoria'] = 'General'
 
         # 5. Cost Logic (Limpieza de caracteres europeos)
