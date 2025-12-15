@@ -45,7 +45,6 @@ def load_data_engine(file_path_or_buffer):
         df.columns = df.columns.str.strip().str.upper()
 
         # 2. MAPEO DE COLUMNAS (ESPAÑOL -> SISTEMA)
-        # Incluye ambas variantes de "Tipo Trabajo" encontradas en tu CSV
         col_map = {
             'FECHA PLANIFICADA': 'Fecha', 'PLANNED DATE': 'Fecha',
             'DESC. ESTADO': 'Estado', 'STATUS DESCRIPTION': 'Estado',
@@ -55,15 +54,14 @@ def load_data_engine(file_path_or_buffer):
             'CONTRATISTA': 'Contratista', 'CONTRACTOR': 'Contratista',
             'CCAA': 'CCAA', 
             'TIPO DE TRABAJO': 'Categoria_Raw', 
-            'TIPO TRABAJO': 'Categoria_Raw',  # Tu archivo tiene AMBAS columnas
-            'COSTES (€)': 'Coste',
+            'TIPO TRABAJO': 'Categoria_Raw', 
+            'COSTES (€)': 'Coste', 'COSTES': 'Coste', # Added fallback
             'ESPECIALIDAD': 'Especialidad',
             'INICIO REAL': 'Inicio_Real'
         }
         df.rename(columns=col_map, inplace=True)
         
         # --- FIX CRITICO: ELIMINAR COLUMNAS DUPLICADAS ---
-        # Si 'Categoria_Raw' aparece dos veces, nos quedamos solo con la primera.
         df = df.loc[:, ~df.columns.duplicated()]
         
         # 3. CONVERSIÓN DE FECHAS
@@ -71,8 +69,6 @@ def load_data_engine(file_path_or_buffer):
             df['Fecha'] = pd.to_datetime(df['Fecha'], dayfirst=True, errors='coerce')
             df = df.dropna(subset=['Fecha'])
 
-        # --- LOGICA RESTAURADA ---
-        
         # 4. Work Category Logic (COR/PRV/MOD)
         def categorize(val):
             s = str(val).upper()
@@ -82,19 +78,32 @@ def load_data_engine(file_path_or_buffer):
             return 'Otros'
             
         if 'Categoria_Raw' in df.columns:
-            # Ahora esto es seguro porque 'Categoria_Raw' es única
             df['Categoria'] = df['Categoria_Raw'].apply(categorize)
         else:
             df['Categoria'] = 'General'
 
-        # 5. Cost Logic (Limpieza de caracteres europeos)
+        # --- FIX MEJORADO: LIMPIEZA DE COSTES ---
         if 'Coste' in df.columns:
+            # Forzamos conversión a string para manipular
+            df['Coste'] = df['Coste'].astype(str)
+            
+            # Limpieza agresiva:
+            # 1. Reemplazar 'nan' string por 0
+            # 2. Quitar símbolo de Euro y espacios
+            # 3. Quitar puntos de miles (1.000 -> 1000)
+            # 4. Reemplazar coma decimal por punto (73,5 -> 73.5)
             df['Coste'] = (
                 df['Coste']
-                .astype(str)
-                .str.replace('.', '', regex=False)
-                .str.replace(',', '.', regex=False)
+                .str.lower()
+                .str.replace('nan', '0', regex=False)
+                .str.replace('none', '0', regex=False)
+                .str.replace('€', '', regex=False)
+                .str.strip()
+                .str.replace('.', '', regex=False)  # Quita separador de miles
+                .str.replace(',', '.', regex=False) # Cambia coma decimal a punto
             )
+            
+            # Convertir a número, los errores se vuelven 0
             df['Coste'] = pd.to_numeric(df['Coste'], errors='coerce').fillna(0)
         else:
             df['Coste'] = 0
@@ -109,21 +118,20 @@ def load_data_engine(file_path_or_buffer):
 
         return df
 
-# --- 4. DATA LOADING LOGIC (FILE UPLOADER + LOCAL FALLBACK) ---
+# --- 4. DATA LOADING LOGIC ---
 st.sidebar.title("🎛️ DATOS")
-# Esto soluciona el error FileNotFoundError permitiendo subir el archivo si no está local
 uploaded_file = st.sidebar.file_uploader("📂 Cargar 'PDS - Hoja1.csv'", type=['csv', 'txt'])
 
 df = None
 if uploaded_file is not None:
     df = load_data_engine(uploaded_file)
 else:
-    # Intenta buscar el archivo localmente
     local_path = 'PDS - Hoja1.csv'
     if os.path.exists(local_path):
         df = load_data_engine(local_path)
     else:
-        st.warning("⚠️ Archivo no encontrado. Por favor suba el archivo CSV en el panel lateral.")
+        # Fallback if specific name is not found but others exist? No, strict check for safety.
+        st.warning("⚠️ Esperando archivo. Suba el CSV en el panel lateral.")
         st.stop()
 
 if df is None or df.empty:
@@ -137,31 +145,42 @@ st.sidebar.title("FILTROS MAESTROS")
 # SECTION 1: TIME
 with st.sidebar.expander("📅 TIEMPO Y FECHA", expanded=True):
     min_d, max_d = df['Fecha'].min().date(), df['Fecha'].max().date()
-    # Protección contra fechas invertidas
     if min_d > max_d: date_range = st.date_input("Rango", [min_d, min_d])
     else: date_range = st.date_input("Rango", [min_d, max_d])
 
-# SECTION 2: WORK TYPES
-with st.sidebar.expander("🔧 TIPO DE TRABAJO", expanded=True):
-    cat_opts = sorted(df['Categoria'].unique())
-    sel_cat = st.multiselect("Categoría", cat_opts, default=cat_opts)
-    
-    if 'Especialidad' in df.columns:
-        spec_opts = sorted(df['Especialidad'].dropna().unique())
-        sel_spec = st.multiselect("Especialidad", spec_opts, default=spec_opts)
-    else:
-        sel_spec = []
-
-# SECTION 3: GEOGRAPHY & OPS
-with st.sidebar.expander("🌍 UBICACIÓN Y ESTADO", expanded=False):
+# SECTION 2: GEOGRAPHY (Hierarchical)
+with st.sidebar.expander("🌍 UBICACIÓN (CCAA y CENTRO)", expanded=True):
+    # 1. Filtro CCAA
     ccaa_opts = sorted(df['CCAA'].dropna().unique())
     sel_ccaa = st.multiselect("Comunidades", ccaa_opts, default=ccaa_opts)
+    
+    # 2. Filtro CENTRO (Depende de las CCAA seleccionadas)
+    # --- NEW: Logic to filter centers based on CCAA selection ---
+    if sel_ccaa:
+        filtered_centers_list = df[df['CCAA'].isin(sel_ccaa)]['Centro'].dropna().unique()
+    else:
+        filtered_centers_list = df['Centro'].dropna().unique()
+        
+    center_opts = sorted(filtered_centers_list)
+    # Default: Select ALL available centers to avoid empty charts initially
+    sel_center = st.multiselect("Centros", center_opts, default=center_opts)
+
+# SECTION 3: WORK TYPES & DETAILS
+with st.sidebar.expander("🔧 TIPO Y DETALLES", expanded=False):
+    cat_opts = sorted(df['Categoria'].unique())
+    sel_cat = st.multiselect("Categoría", cat_opts, default=cat_opts)
     
     status_opts = sorted(df['Estado'].dropna().unique())
     sel_status = st.multiselect("Estado", status_opts, default=status_opts)
     
     urg_opts = sorted(df['Urgencia'].dropna().unique())
     sel_urg = st.multiselect("Urgencia", urg_opts, default=urg_opts)
+    
+    if 'Especialidad' in df.columns:
+        spec_opts = sorted(df['Especialidad'].dropna().unique())
+        sel_spec = st.multiselect("Especialidad", spec_opts, default=spec_opts)
+    else:
+        sel_spec = []
 
 # SECTION 4: CONTRACTORS
 with st.sidebar.expander("👷 CONTRATISTAS", expanded=False):
@@ -175,8 +194,11 @@ if len(date_range) == 2:
 
     mask = (
         (df['Fecha'] >= start_date) & (df['Fecha'] <= end_date) &
-        (df['Categoria'].isin(sel_cat)) & (df['CCAA'].isin(sel_ccaa)) &
-        (df['Estado'].isin(sel_status)) & (df['Urgencia'].isin(sel_urg)) &
+        (df['CCAA'].isin(sel_ccaa)) & 
+        (df['Centro'].isin(sel_center)) & # --- NEW: Apply Center Filter ---
+        (df['Categoria'].isin(sel_cat)) & 
+        (df['Estado'].isin(sel_status)) & 
+        (df['Urgencia'].isin(sel_urg)) &
         (df['Contratista'].isin(sel_contr))
     )
     if sel_spec and 'Especialidad' in df.columns: 
@@ -197,7 +219,7 @@ c_tog1, c_tog2 = st.columns([1,1])
 with c_tog1:
     view_metric = st.radio("Métrica:", ["Volumen (#)", "Coste (€)"], horizontal=True)
 with c_tog2:
-    view_geo = st.radio("Agrupación:", ["Región", "Centro"], horizontal=True)
+    view_geo = st.radio("Agrupación:", ["Región (CCAA)", "Centro"], horizontal=True)
 
 # KPI DECK
 k1, k2, k3, k4, k5, k6 = st.columns(6)
@@ -206,7 +228,7 @@ total_cost = df_f['Coste'].sum()
 crit_count = len(df_f[df_f['Urgencia'].astype(str).str.contains('CRITIC|URGENTE', case=False)])
 
 k1.metric("Órdenes", f"{total_vol:,}")
-k2.metric("Coste Total", f"€{total_cost:,.0f}")
+k2.metric("Coste Total", f"€{total_cost:,.2f}") # Formatted to show decimals
 k3.metric("Urgentes", crit_count)
 k4.metric("Correctivos", len(df_f[df_f['Categoria']=='Correctivo']))
 k5.metric("Preventivos", len(df_f[df_f['Categoria']=='Preventivo']))
@@ -216,7 +238,8 @@ st.markdown("---")
 
 # --- 7. CHARTS & VISUALIZATIONS ---
 y_val = 'Coste' if view_metric == "Coste (€)" else 'Value' 
-x_geo = 'CCAA' if view_geo == "Región" else 'Centro'
+# Logic for grouping based on toggle
+x_geo = 'CCAA' if view_geo == "Región (CCAA)" else 'Centro'
 
 if view_metric == "Coste (€)":
     df_agg = df_f.groupby([x_geo, 'Categoria'])['Coste'].sum().reset_index()
@@ -230,24 +253,33 @@ with tab_main:
     row1_1, row1_2 = st.columns([2, 1])
     with row1_1:
         st.subheader(f"Distribución por {x_geo}")
-        fig_bar = px.bar(df_agg.sort_values('Value', ascending=True).tail(20), 
-                          x='Value', y=x_geo, color='Categoria', orientation='h', 
-                          text='Value', title=f"Top 20 {x_geo}",
+        # Limit centers chart to top 20 to avoid overcrowding if grouping by Center
+        limit_rows = 20 if x_geo == 'Centro' else 50
+        
+        fig_bar = px.bar(df_agg.groupby(x_geo)['Value'].sum().reset_index().sort_values('Value').tail(limit_rows), 
+                          x='Value', y=x_geo, orientation='h', 
+                          text='Value', title=f"Top {limit_rows} {x_geo}",
                           color_discrete_sequence=px.colors.qualitative.Bold)
+        fig_bar.update_traces(texttemplate='%{text:.2s}' if view_metric == "Coste (€)" else '%{text}')
         st.plotly_chart(fig_bar, use_container_width=True)
     with row1_2:
         st.subheader("Estado")
-        fig_don = px.pie(df_f, names='Estado', hole=0.5)
+        fig_don = px.pie(df_f, names='Estado', hole=0.5, color_discrete_sequence=px.colors.sequential.RdBu)
         st.plotly_chart(fig_don, use_container_width=True)
 
     row2_1, row2_2 = st.columns(2)
     with row2_1:
         st.subheader("Evolución Mensual")
-        df_time_agg = df_f.groupby([pd.Grouper(key='Fecha', freq='M'), 'Categoria']).size().reset_index(name='Count')
-        fig_line = px.line(df_time_agg, x='Fecha', y='Count', color='Categoria', markers=True)
+        # Ensure we count or sum correctly for the line chart
+        if view_metric == "Coste (€)":
+            df_time_agg = df_f.groupby([pd.Grouper(key='Fecha', freq='M'), 'Categoria'])['Coste'].sum().reset_index(name='Value')
+        else:
+            df_time_agg = df_f.groupby([pd.Grouper(key='Fecha', freq='M'), 'Categoria']).size().reset_index(name='Value')
+            
+        fig_line = px.line(df_time_agg, x='Fecha', y='Value', color='Categoria', markers=True)
         st.plotly_chart(fig_line, use_container_width=True)
     with row2_2:
-        st.subheader("Mapa de Calor")
+        st.subheader("Mapa de Calor (Urgencia vs Estado)")
         heat_data = df_f.groupby(['Urgencia', 'Estado']).size().reset_index(name='Count')
         fig_heat = px.density_heatmap(heat_data, x='Estado', y='Urgencia', z='Count', text_auto=True, color_continuous_scale='Viridis')
         st.plotly_chart(fig_heat, use_container_width=True)
@@ -256,40 +288,49 @@ with tab_deep:
     c_deep1, c_deep2 = st.columns(2)
     with c_deep1:
         st.subheader("Jerarquía Solar")
-        path = ['CCAA', 'Centro', 'Categoria'] if x_geo == 'CCAA' else ['Centro', 'Categoria', 'Estado']
-        fig_sun = px.sunburst(df_f.head(5000), path=path, color='Categoria')
+        # Limit data for sunburst to avoid lag with 10k+ rows
+        path = ['CCAA', 'Centro', 'Categoria'] if x_geo == 'CCAA' else ['Categoria', 'CCAA', 'Centro']
+        fig_sun = px.sunburst(df_f, path=path, values='Coste' if view_metric == "Coste (€)" else None, color='Categoria')
         fig_sun.update_layout(height=500)
         st.plotly_chart(fig_sun, use_container_width=True)
     with c_deep2:
         st.subheader("Composición (Treemap)")
-        fig_tree = px.treemap(df_f, path=['Categoria', 'Urgencia', 'Estado'])
+        fig_tree = px.treemap(df_f, path=['Categoria', 'Urgencia', 'Estado'], values='Coste' if view_metric == "Coste (€)" else None)
         st.plotly_chart(fig_tree, use_container_width=True)
 
 with tab_perf:
     c_perf1, c_perf2, c_perf3 = st.columns(3)
     with c_perf1:
         st.subheader("Top Contratistas")
-        top_con = df_f['Contratista'].value_counts().head(10)
+        # Aggregation logic based on metric
+        if view_metric == "Coste (€)":
+            top_con = df_f.groupby('Contratista')['Coste'].sum().sort_values(ascending=False).head(10)
+        else:
+            top_con = df_f['Contratista'].value_counts().head(10)
+            
         fig_c = px.bar(x=top_con.index, y=top_con.values, title="Top Contratistas")
         st.plotly_chart(fig_c, use_container_width=True)
+        
     with c_perf2:
         st.subheader("Top Especialidades")
         if 'Especialidad' in df_f.columns:
-            top_s = df_f['Especialidad'].value_counts().head(10)
+            if view_metric == "Coste (€)":
+                top_s = df_f.groupby('Especialidad')['Coste'].sum().sort_values(ascending=False).head(10)
+            else:
+                top_s = df_f['Especialidad'].value_counts().head(10)
             fig_s = px.bar(x=top_s.values, y=top_s.index, orientation='h', title="Top Especialidades")
             st.plotly_chart(fig_s, use_container_width=True)
+            
     with c_perf3:
-        st.subheader("Embudo")
+        st.subheader("Embudo de Estados")
         funnel_data = df_f['Estado'].value_counts().reset_index()
         funnel_data.columns = ['Estado', 'Count']
         fig_fun = px.funnel(funnel_data, x='Count', y='Estado')
         st.plotly_chart(fig_fun, use_container_width=True)
 
-
 with tab_raw:
     cols_to_show = st.multiselect("Columnas", list(df_f.columns), default=list(df_f.columns)[:10])
     
-    # FIX: Sort the full dataframe FIRST, then select the columns to display
     st.dataframe(
         df_f.sort_values('Fecha', ascending=False)[cols_to_show], 
         use_container_width=True,
@@ -297,4 +338,4 @@ with tab_raw:
     )
     
     csv_data = df_f.to_csv(index=False).encode('utf-8')
-    st.download_button("📥 DESCARGAR CSV", csv_data, "data_export.csv", "text/csv")
+    st.download_button("📥 DESCARGAR CSV FILTRADO", csv_data, "data_export.csv", "text/csv")
