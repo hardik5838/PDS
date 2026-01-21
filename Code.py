@@ -145,8 +145,8 @@ st.sidebar.title("FILTROS MAESTROS")
 # SECTION 1: TIME
 with st.sidebar.expander("📅 TIEMPO Y FECHA", expanded=True):
     min_d, max_d = df['Fecha'].min().date(), df['Fecha'].max().date()
-        if min_d > max_d: date_range = st.date_input("Rango", [min_d, min_d])
-        else: date_range = st.date_input("Rango", [min_d, max_d])
+    if min_d > max_d: date_range = st.date_input("Rango", [min_d, min_d])
+    else: date_range = st.date_input("Rango", [min_d, max_d])
 
 # SECTION 2: GEOGRAPHY (Hierarchical)
 with st.sidebar.expander("🌍 UBICACIÓN (CCAA y CENTRO)", expanded=True):
