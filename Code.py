@@ -24,22 +24,54 @@ st.markdown("""
 </style>
 """, unsafe_allow_html=True)
 
-# --- 3. ROBUST ENGINE (CRASH PROOF) ---
+# --- 3. ROBUST ENGINE (CRASH PROOF - V2) ---
 @st.cache_data
 def load_data_engine(file_path_or_buffer):
     with st.spinner("🚀 Cargando Motor de Análisis..."):
-        try:
-            # INTENTO 1: Latin-1 con separador de punto y coma
-            df = pd.read_csv(file_path_or_buffer, encoding='latin-1', sep=';', on_bad_lines='skip')
-        except Exception:
+        df = None
+        
+        # Función auxiliar para reiniciar el puntero del archivo
+        def reset_buffer():
+            if hasattr(file_path_or_buffer, 'seek'):
+                file_path_or_buffer.seek(0)
+
+        # Estrategias de lectura: (Encoding, Separador, Motor)
+        # sep=None usa el motor 'python' para "olfatear" el separador automáticamente
+        strategies = [
+            ('utf-8', None, 'python'),        # 1. Auto-detectar (Mejor opción)
+            ('latin-1', None, 'python'),      # 2. Auto-detectar con encoding legacy
+            ('utf-8', ';', 'c'),              # 3. Forzar punto y coma
+            ('latin-1', ';', 'c'),            # 4. Forzar punto y coma (Excel español)
+            ('utf-8', ',', 'c'),              # 5. Forzar coma
+            ('latin-1', ',', 'c')             # 6. Forzar coma
+        ]
+
+        for enc, sep, eng in strategies:
             try:
-                if hasattr(file_path_or_buffer, 'seek'): file_path_or_buffer.seek(0)
-                # INTENTO 2: UTF-8 con separador de punto y coma
-                df = pd.read_csv(file_path_or_buffer, encoding='utf-8', sep=';', on_bad_lines='skip')
+                reset_buffer()
+                # on_bad_lines='skip' salta líneas corruptas sin romper todo
+                temp_df = pd.read_csv(
+                    file_path_or_buffer, 
+                    encoding=enc, 
+                    sep=sep, 
+                    engine=eng, 
+                    on_bad_lines='skip'
+                )
+                
+                # VALIDACIÓN CRÍTICA:
+                # Si leemos el archivo y resulta en solo 1 columna, probablemente el separador está mal.
+                # Lanzamos un error artificial para forzar el siguiente intento en el bucle.
+                if temp_df.shape[1] < 2:
+                    raise ValueError("Separador incorrecto detectado (solo 1 columna)")
+                
+                df = temp_df
+                break # ¡Éxito! Salimos del bucle
             except Exception:
-                if hasattr(file_path_or_buffer, 'seek'): file_path_or_buffer.seek(0)
-                # INTENTO 3: Detección automática
-                df = pd.read_csv(file_path_or_buffer, sep=None, engine='python', on_bad_lines='skip')
+                continue # Si falla, probamos la siguiente estrategia
+
+        # Si después de todos los intentos df sigue vacío
+        if df is None or df.empty:
+            return pd.DataFrame()
 
         # 1. LIMPIEZA DE CABECERAS
         df.columns = df.columns.str.strip().str.upper()
@@ -55,7 +87,7 @@ def load_data_engine(file_path_or_buffer):
             'CCAA': 'CCAA', 
             'TIPO DE TRABAJO': 'Categoria_Raw', 
             'TIPO TRABAJO': 'Categoria_Raw', 
-            'COSTES (€)': 'Coste', 'COSTES': 'Coste', # Added fallback
+            'COSTES (€)': 'Coste', 'COSTES': 'Coste', 
             'ESPECIALIDAD': 'Especialidad',
             'INICIO REAL': 'Inicio_Real'
         }
@@ -82,33 +114,29 @@ def load_data_engine(file_path_or_buffer):
         else:
             df['Categoria'] = 'General'
 
-        # --- FIX MEJORADO: LIMPIEZA DE COSTES ---
+        # 5. LIMPIEZA DE COSTES
         if 'Coste' in df.columns:
-            # Forzamos conversión a string para manipular
-            df['Coste'] = df['Coste'].astype(str)
+            # Convertimos a string y limpiamos caracteres extraños
+            df['Coste'] = df['Coste'].astype(str).str.replace(r'[^\d.,]', '', regex=True)
             
-            # Limpieza agresiva:
-            # 1. Reemplazar 'nan' string por 0
-            # 2. Quitar símbolo de Euro y espacios
-            # 3. Quitar puntos de miles (1.000 -> 1000)
-            # 4. Reemplazar coma decimal por punto (73,5 -> 73.5)
-            df['Coste'] = (
-                df['Coste']
-                .str.lower()
-                .str.replace('nan', '0', regex=False)
-                .str.replace('none', '0', regex=False)
-                .str.replace('€', '', regex=False)
-                .str.strip()
-                .str.replace('.', '', regex=False)  # Quita separador de miles
-                .str.replace(',', '.', regex=False) # Cambia coma decimal a punto
-            )
+            def clean_cost(x):
+                if not x or x.lower() == 'nan': return 0.0
+                try:
+                    # Si tiene coma y punto (ej: 1.200,50), quitamos punto y cambiamos coma
+                    if ',' in x and '.' in x:
+                        x = x.replace('.', '').replace(',', '.')
+                    # Si solo tiene coma (ej: 50,5) -> 50.5
+                    elif ',' in x:
+                        x = x.replace(',', '.')
+                    return float(x)
+                except:
+                    return 0.0
             
-            # Convertir a número, los errores se vuelven 0
-            df['Coste'] = pd.to_numeric(df['Coste'], errors='coerce').fillna(0)
+            df['Coste'] = df['Coste'].apply(clean_cost)
         else:
-            df['Coste'] = 0
+            df['Coste'] = 0.0
 
-        # 6. Duration Logic (Cálculo de días)
+        # 6. Duration Logic
         if 'Inicio_Real' in df.columns:
             df['Inicio_Real'] = pd.to_datetime(df['Inicio_Real'], dayfirst=True, errors='coerce')
             df['Dias_Ejecucion'] = (df['Fecha'] - df['Inicio_Real']).dt.days
